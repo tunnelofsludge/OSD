@@ -1,0 +1,58 @@
+<#
+.SYNOPSIS
+Clears stale items in the SCCM Cache Folder
+
+.DESCRIPTION
+Gets a list of items that are older than the retention day, and deletes them from the ccmcache folder. 
+Typically this is located in C:\Windows\ccmcache
+
+.PARAMETER RetentionDays
+The time threshold for for file age. Anything older than the retention time is subject for removal
+
+.EXAMPLE
+Clear-ClientCache -RetentionDays 15
+
+.NOTES
+https://www.scconfigmgr.com/2017/02/21/sccm-client-cache-maintenance-configuration-baseline/
+Adapted to be compatible with powershell 2.0
+#>
+
+function Clear-ClientCache {
+    [CmdletBinding()]
+    Param (
+        # Specifies the time threshold to delete files after. 
+        [Parameter(Mandatory = $false)]
+        [string]$RetentionDays = '15'
+    )
+    # Specify Max Days For CCM Cache Entries
+    $MaxRetention = "$RetentionDays"
+  
+    # Connect To Resource Manager Com Object
+    $SCCMClient = New-Object -ComObject UIResource.UIResourceMgr
+  
+    # Get SCCM Client Cache Directory Location
+    $SCCMCacheDir = ($SCCMClient.GetCacheInfo().Location)
+  
+    # List All Applications Due In The Future Or Currently Running
+    $PendingApps = $SCCMClient.GetAvailableApplications() | Where-Object { (($_.StartTime -gt (Get-Date)) -or ($_.IsCurrentlyRunning -eq "1")) }
+  
+    # Create List Of Applications To Purge From Cache
+    $PurgeApps = $SCCMClient.GetCacheInfo().GetCacheElements() | Where-Object { ($PendingApps.PackageID -notcontains $_.ContentID) -and $((Test-Path -Path $_.Location) -eq $true) -and ($_.LastReferenceTime -lt (Get-Date).AddDays(- $MaxRetention)) }
+  
+    # Purge Apps No Longer Required
+    foreach ($App in $PurgeApps) {
+        $SCCMClient.GetCacheInfo().DeleteCacheElement($App.CacheElementID)
+    }
+  
+    # Clean Up Misc Directories 
+    $ActiveDirs = $SCCMClient.GetCacheInfo().GetCacheElements() | ForEach-Object { Write-Output $_.Location }
+    Get-ChildItem -Path $SCCMCacheDir | Where-Object { (($_.PsIsContainer -eq $true) -and ($ActiveDirs -notcontains $_.FullName)) } | Remove-Item -Recurse -Force
+
+    #Write Output
+    $sum = 0
+    $PurgeApps.ContentSize | ForEach-Object {$sum += $_}
+    $totalsize = [math]::round($sum / 1Mb, 2)
+    Write-Output "Deleted $($PurgeApps.Count) Cache Items, Saving $($totalsize) GB"
+}
+
+Clear-ClientCache
